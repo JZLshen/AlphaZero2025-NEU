@@ -10,12 +10,11 @@ from collections import deque
 import time
 
 from config import *
-from game import GomokuGame
+from game import DotsAndBoxesGame
 from model import GomokuNet
 from mcts import MCTS
 
 
-# --- 经验回放缓冲区 ---
 class ReplayBuffer:
     def __init__(self, maxlen):
         self.buffer = deque(maxlen=maxlen)
@@ -31,9 +30,8 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-# --- 自我对弈工作进程 ---
 def self_play_worker(model_path, num_games, replay_buffer_queue):
-    game = GomokuGame()
+    game = DotsAndBoxesGame()
     nnet = GomokuNet(game).to(DEVICE)
     if os.path.exists(model_path):
         nnet.load_state_dict(torch.load(model_path, map_location=DEVICE))
@@ -56,16 +54,17 @@ def self_play_worker(model_path, num_games, replay_buffer_queue):
 
             sym = game.get_symmetries(canonical_board, pi)
             for b, p in sym:
-                train_examples.append([b, current_player, p, None])
+                train_examples.append(
+                    [game.string_representation(b), current_player, p, None]
+                )
 
             action = np.random.choice(len(pi), p=pi)
             board, current_player = game.get_next_state(board, current_player, action)
-
             game_result = game.get_game_ended(board, 1)
 
             if game_result != 0:
                 final_data = [
-                    (x[0].tobytes(), x[2], game_result if x[1] == 1 else -game_result)
+                    (x[0], x[2], game_result if x[1] == 1 else -game_result)
                     for x in train_examples
                 ]
                 local_buffer.extend(final_data)
@@ -73,29 +72,47 @@ def self_play_worker(model_path, num_games, replay_buffer_queue):
     replay_buffer_queue.put(local_buffer)
 
 
-# --- 训练函数 ---
 def train(nnet, optimizer, replay_buffer, writer, global_step):
     nnet.train()
+    game = DotsAndBoxesGame()
+    n = game.n
+
     for _ in range(EPOCHS_PER_ITERATION):
         examples = replay_buffer.sample(BATCH_SIZE)
         boards_bytes, pis, vs = list(zip(*examples))
 
-        boards = np.frombuffer(b"".join(boards_bytes), dtype=np.int8).reshape(
-            BATCH_SIZE, BOARD_SIZE, BOARD_SIZE
-        )
+        board_tensors = []
+        h_size = n * (n - 1)
+        v_size = (n - 1) * n
 
-        my_stones = torch.tensor(boards == 1, dtype=torch.float32)
-        opponent_stones = torch.tensor(boards == -1, dtype=torch.float32)
-        boards_tensor = torch.stack([my_stones, opponent_stones], dim=1).to(DEVICE)
+        for b_bytes in boards_bytes:
+            h_lines = np.frombuffer(b_bytes[:h_size], dtype=np.int8).reshape(n, n - 1)
+            v_lines = np.frombuffer(
+                b_bytes[h_size : h_size + v_size], dtype=np.int8
+            ).reshape(n - 1, n)
+            box_owners = np.frombuffer(
+                b_bytes[h_size + v_size :], dtype=np.int8
+            ).reshape(n - 1, n - 1)
 
-        target_pis = torch.FloatTensor(np.array(pis)).to(DEVICE)
-        target_vs = torch.FloatTensor(np.array(vs).astype(np.float32)).to(DEVICE)
+            h_padded = np.pad(h_lines, ((0, 0), (0, 1)), "constant")
+            v_padded = np.pad(v_lines, ((0, 1), (0, 0)), "constant")
+            box_padded = np.pad(box_owners, ((0, 1), (0, 1)), "constant")
 
-        out_pi, out_v = nnet(boards_tensor)
+            board_tensor = torch.tensor(
+                np.array([h_padded, v_padded, box_padded]), dtype=torch.float32
+            )
+            board_tensors.append(board_tensor)
 
-        l_pi = -torch.sum(target_pis * out_pi) / target_pis.size()[0]
+        boards_tensor_batch = torch.stack(board_tensors)
+        target_pis = torch.FloatTensor(np.array(pis))
+        target_vs = torch.FloatTensor(np.array(vs).astype(np.float32))
+
+        out_pi, out_v = nnet(boards_tensor_batch)
+
+        l_pi = -torch.sum(target_pis.to(DEVICE) * out_pi) / target_pis.size()[0]
         l_v = (
-            torch.sum((target_vs.view(-1) - out_v.view(-1)) ** 2) / target_vs.size()[0]
+            torch.sum((target_vs.to(DEVICE).view(-1) - out_v.view(-1)) ** 2)
+            / target_vs.size()[0]
         )
         total_loss = l_pi + l_v
 
@@ -103,14 +120,14 @@ def train(nnet, optimizer, replay_buffer, writer, global_step):
         total_loss.backward()
         optimizer.step()
 
-        writer.add_scalar("Loss/total", total_loss.item(), global_step)
-        writer.add_scalar("Loss/policy", l_pi.item(), global_step)
-        writer.add_scalar("Loss/value", l_v.item(), global_step)
+        if global_step % 10 == 0:
+            writer.add_scalar("Loss/total", total_loss.item(), global_step)
+            writer.add_scalar("Loss/policy", l_pi.item(), global_step)
+            writer.add_scalar("Loss/value", l_v.item(), global_step)
         global_step += 1
     return global_step
 
 
-# --- 评估竞技场 ---
 def play_game(game, nnet1, nnet2):
     players = {1: nnet1, -1: nnet2}
     board = game.get_init_board()
@@ -137,6 +154,7 @@ def pit(game, nnet1, nnet2, num_games):
             p2_wins += 1
         else:
             draws += 1
+
     for _ in tqdm(range(num_games // 2), desc="Arena (P2 starts)"):
         winner = play_game(game, nnet2, nnet1)
         if winner == -1:
@@ -149,17 +167,15 @@ def pit(game, nnet1, nnet2, num_games):
 
 
 def main():
-    # --- 初始化 ---
     print(f"Using device: {DEVICE}")
-    game = GomokuGame()
+    game = DotsAndBoxesGame()
     replay_buffer = ReplayBuffer(maxlen=REPLAY_BUFFER_MAXLEN)
-    writer = SummaryWriter(f"runs/gomoku_experiment_{int(time.time())}")
+    writer = SummaryWriter(f"runs/dots_and_boxes_experiment_{int(time.time())}")
     global_step = 0
 
     net = GomokuNet(game).to(DEVICE)
     best_net = GomokuNet(game).to(DEVICE)
 
-    # --- 创建目录和初始模型 ---
     if not os.path.exists("data/checkpoints"):
         os.makedirs("data/checkpoints")
 
@@ -178,13 +194,11 @@ def main():
     )
     scheduler = StepLR(optimizer, step_size=LR_DECAY_STEP, gamma=LR_DECAY_GAMMA)
 
-    # --- 主循环 ---
     for i in range(1, NUM_ITERATIONS + 1):
         print(f"--- Iteration {i} ---")
 
-        # 1. 并行自我对弈
         print("Starting self-play...")
-        best_net.load_state_dict(torch.load(best_model_path))  # 确保加载的是最新best
+        best_net.load_state_dict(torch.load(best_model_path))
         replay_buffer_queue = mp.Queue()
         num_processes = mp.cpu_count()
         games_per_process = (GAMES_PER_ITERATION + num_processes - 1) // num_processes
@@ -209,14 +223,11 @@ def main():
             )
             continue
 
-        # 2. 训练网络
         print("Training neural network...")
         global_step = train(net, optimizer, replay_buffer, writer, global_step)
 
-        # 3. 更新学习率
         scheduler.step()
 
-        # 4. 评估网络
         print("Pitting new model against best model...")
         net.eval()
         best_net.eval()
@@ -234,9 +245,8 @@ def main():
             best_net.load_state_dict(net.state_dict())
         else:
             print("New model is not better. Reverting to the best model.")
-            net.load_state_dict(best_net.state_dict())  # 还原网络权重
+            net.load_state_dict(best_net.state_dict())
 
-        # 5. 定期保存检查点
         if i % CHECKPOINT_INTERVAL == 0:
             torch.save(net.state_dict(), f"data/checkpoints/checkpoint_{i}.pth.tar")
 
@@ -245,6 +255,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # 在Windows或MacOS上，'spawn'是更安全的多进程启动方法
     mp.set_start_method("spawn", force=True)
     main()

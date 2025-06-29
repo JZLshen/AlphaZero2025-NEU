@@ -13,11 +13,10 @@ class MCTS:
         self.Ps = {}
 
     def get_action_prob(self, canonical_board, temp=1, add_exploration_noise=True):
-        s = canonical_board.tobytes()
+        s = self.game.string_representation(canonical_board)
 
+        # 首次访问或需要加噪声时，先跑一次search来获取Ps[s]
         if s not in self.Ps or add_exploration_noise:
-            # 首次访问或需要加噪声时，先跑一次search来获取Ps[s]
-            # 这样确保Ps[s]存在
             self.search(canonical_board, add_exploration_noise=add_exploration_noise)
         else:
             for _ in range(MCTS_SIMULATIONS):
@@ -40,14 +39,14 @@ class MCTS:
         return probs
 
     def search(self, canonical_board, add_exploration_noise=False):
-        s = canonical_board.tobytes()
+        s = self.game.string_representation(canonical_board)
 
         ended = self.game.get_game_ended(canonical_board, 1)
         if ended != 0:
             return -ended
 
         if s not in self.Ps:
-            pi, v = self.nnet(self.nnet.get_input_tensor(canonical_board, 1))
+            pi, v = self.nnet(self.nnet.to_input_tensor(canonical_board))
             pi = torch.exp(pi).data.cpu().numpy()[0]
             v = v.data.cpu().numpy()[0][0]
 
@@ -56,7 +55,7 @@ class MCTS:
             sum_pi = np.sum(pi)
             if sum_pi > 0:
                 pi /= sum_pi
-            else:  # 所有走法都被mask了，可能是bug
+            else:
                 pi = valid_moves / np.sum(valid_moves)
 
             self.Ps[s] = pi
@@ -90,7 +89,7 @@ class MCTS:
                     best_act = a
 
         a = best_act
-        next_s, next_player = self.game.get_next_state(canonical_board, 1, a)
+        next_s, _ = self.game.get_next_state(canonical_board, 1, a)
         v = self.search(next_s)
 
         if (s, a) in self.Qsa:
