@@ -1,5 +1,6 @@
 import numpy as np
 import math
+import torch
 from config import *
 
 
@@ -13,15 +14,10 @@ class MCTS:
         self.Ps = {}
 
     def get_action_prob(self, canonical_board, temp=1, add_exploration_noise=True):
+        for i in range(MCTS_SIMULATIONS):
+            self.search(canonical_board, add_exploration_noise=(i == 0 and add_exploration_noise))
+        
         s = self.game.string_representation(canonical_board)
-
-        # 首次访问或需要加噪声时，先跑一次search来获取Ps[s]
-        if s not in self.Ps or add_exploration_noise:
-            self.search(canonical_board, add_exploration_noise=add_exploration_noise)
-        else:
-            for _ in range(MCTS_SIMULATIONS):
-                self.search(canonical_board, add_exploration_noise=False)
-
         counts = [self.Nsa.get((s, a), 0) for a in range(self.game.get_action_size())]
 
         if temp == 0:
@@ -56,7 +52,8 @@ class MCTS:
             if sum_pi > 0:
                 pi /= sum_pi
             else:
-                pi = valid_moves / np.sum(valid_moves)
+                # Fallback for states with no valid moves (should not happen in dots and boxes before game end)
+                pi = valid_moves / np.sum(valid_moves) if np.sum(valid_moves) > 0 else np.zeros_like(valid_moves)
 
             self.Ps[s] = pi
 
@@ -64,10 +61,10 @@ class MCTS:
                 noise = np.random.dirichlet(
                     [DIRICHLET_ALPHA] * self.game.get_action_size()
                 )
-                self.Ps[s] = (1 - DIRICHLET_EPSILON) * self.Ps[
-                    s
-                ] + DIRICHLET_EPSILON * noise
-
+                self.Ps[s] = (
+                    1 - DIRICHLET_EPSILON
+                ) * self.Ps[s] + DIRICHLET_EPSILON * noise
+            
             self.Ns[s] = 0
             return -v
 
@@ -87,9 +84,14 @@ class MCTS:
                 if u > cur_best:
                     cur_best = u
                     best_act = a
+        
+        if best_act == -1:
+            # If no valid move was found (should not happen in a non-terminal state)
+            return 0
 
         a = best_act
         next_s, _ = self.game.get_next_state(canonical_board, 1, a)
+        
         v = self.search(next_s)
 
         if (s, a) in self.Qsa:

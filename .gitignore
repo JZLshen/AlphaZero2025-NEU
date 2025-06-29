@@ -1,0 +1,76 @@
+# Python
+# ----------------------------------------------------------------
+# 字节码或编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# C语言扩展
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+
+# Conda 和虚拟环境
+# ----------------------------------------------------------------
+# Conda-related
+.conda/
+*.conda
+
+# Virtual Environments
+venv/
+env/
+.venv/
+*/.venv/
+ENV/
+env.bak/
+venv.bak/
+
+
+# 项目特定生成文件
+# ----------------------------------------------------------------
+# TensorBoard 日志文件
+runs/
+
+# 模型检查点文件
+# 我们不希望将所有训练过程中的模型都提交到git
+data/checkpoints/
+
+# 其他可能的日志文件
+*.log
+
+
+# IDE / 编辑器配置文件
+# ----------------------------------------------------------------
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+
+# 操作系统生成的文件
+# ----------------------------------------------------------------
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db

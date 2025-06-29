@@ -47,9 +47,9 @@ class SE_ResidualBlock(nn.Module):
         return out
 
 
-class GomokuNet(nn.Module):
+class DotsAndBoxesNet(nn.Module):
     def __init__(self, game):
-        super(GomokuNet, self).__init__()
+        super(DotsAndBoxesNet, self).__init__()
         self.board_size = game.get_board_size()[0]
         self.action_size = game.get_action_size()
 

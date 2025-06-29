@@ -44,8 +44,8 @@ alphazero_project/
 **1. 克隆项目**
 
 ```bash
-git clone <你的项目仓库URL>
-cd alphazero_project
+git clone https://github.com/JZLshen/AlphaZero2025-NEU.git
+cd AlphaZero2025-NEU
 ```
 
 **2. 创建并激活Python虚拟环境** (推荐)
